@@ -13,7 +13,7 @@
 #include <chrono>
 #include <vector>
 
-// write_png 函數 (與你提供的一樣，保持不變)
+// PNG 影像輸出函式
 void write_png(const char *filename, int iters, int width, int height, const int *buffer)
 {
     FILE *fp = fopen(filename, "wb");
@@ -61,10 +61,10 @@ void write_png(const char *filename, int iters, int width, int height, const int
 
 int main(int argc, char **argv)
 {
-    /* total execution time */
+    // 記錄程式總執行時間
     auto total_start = std::chrono::steady_clock::now();
 
-    /* MPI initialization */
+    // MPI 初始化
     auto mpi_init_start = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
     int rank, size;
@@ -72,7 +72,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     auto mpi_init_end = std::chrono::steady_clock::now();
 
-    /* setup and argument parsing */
+    // 參數設定和解析
     auto setup_start = std::chrono::steady_clock::now();
     assert(argc == 9);
     const char *filename = argv[1];
@@ -84,6 +84,7 @@ int main(int argc, char **argv)
     int width = strtol(argv[7], 0, 10);
     int height = strtol(argv[8], 0, 10);
 
+    // 如果沒有設定 OMP_SCHEDULE，使用動態排程
     if (!getenv("OMP_SCHEDULE"))
     {
         omp_set_schedule(omp_sched_dynamic, 1);
@@ -96,32 +97,34 @@ int main(int argc, char **argv)
     int *local_image = (int *)calloc(total_pixels, sizeof(int));
     assert(local_image);
 
+    // SSE2 向量化用的常數
     const double const_2_val = 2.0;
     __m128d vec_2 = _mm_load1_pd(&const_2_val);
     auto setup_end = std::chrono::steady_clock::now();
 
-    /* computation time */ /* computation time */
+    // 開始計算 Mandelbrot 集合
     auto compute_start = std::chrono::steady_clock::now();
 
-    // 每 rank 的 thread 計時陣列
+    // 建立執行緒計時陣列來記錄每個執行緒的工作時間
     int T = omp_get_max_threads();
     std::vector<double> thread_ms(T, 0.0);
 
 #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        double t0 = omp_get_wtime(); // 每個 thread 的起點（包住整個 for）
+        double t0 = omp_get_wtime(); // 記錄每個執行緒的開始時間
 
 #pragma omp for schedule(dynamic, 1)
         for (int row = rank; row < height; row += size)
         {
-            // === 你的 SIMD 計算（原樣）===
+            // 使用 SSE2 向量化計算這一行的所有像素
             size_t row_offset = (size_t)row * width;
             __m128d y_init = _mm_set1_pd(lower + (double)row * dy);
 
             int idx0 = 0, idx1 = 1, next_idx = 2;
             int count0 = 0, count1 = 0;
 
+            // 設定初始的 x 座標向量 [idx1_x, idx0_x]
             __m128d x_init = _mm_set_pd(left + (double)idx1 * dx, left + (double)idx0 * dx);
             __m128d x = _mm_setzero_pd();
             __m128d y = _mm_setzero_pd();
@@ -131,8 +134,10 @@ int main(int argc, char **argv)
 
             double len_arr[2];
 
+            // 主要的向量化迭代迴圈
             while (1)
             {
+                // Mandelbrot 迭代公式：z = z² + c
                 y = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(vec_2, x), y), y_init);
                 x = _mm_add_pd(_mm_sub_pd(x_sq, y_sq), x_init);
 
@@ -144,6 +149,7 @@ int main(int argc, char **argv)
                 count1++;
                 _mm_store_pd(len_arr, len_sq);
 
+                // 檢查第一個像素是否收斂
                 if (count0 == iters || len_arr[0] >= 4.0)
                 {
                     local_image[row_offset + idx0] = count0;
@@ -152,6 +158,7 @@ int main(int argc, char **argv)
                         break;
                     count0 = 0;
 
+                    // 更新向量中的 x 座標
                     double x_low = left + (double)idx0 * dx, x_high;
                     _mm_storeh_pd(&x_high, x_init);
                     x_init = _mm_set_pd(x_high, x_low);
@@ -159,6 +166,7 @@ int main(int argc, char **argv)
                     y[0] = 0;
                     len_sq[0] = 0;
 
+                    // 檢查第二個像素是否也同時收斂
                     if (count1 == iters || len_arr[1] >= 4.0)
                     {
                         local_image[row_offset + idx1] = count1;
@@ -177,6 +185,7 @@ int main(int argc, char **argv)
                     x_sq = _mm_mul_pd(x, x);
                     y_sq = _mm_mul_pd(y, y);
                 }
+                // 只有第二個像素收斂的情況
                 else if (count1 == iters || len_arr[1] >= 4.0)
                 {
                     local_image[row_offset + idx1] = count1;
@@ -197,6 +206,7 @@ int main(int argc, char **argv)
                 }
             }
 
+            // 處理剩餘的單一像素（用純量計算）
             if (idx1 >= width && idx0 < width)
             {
                 double px = x[0], py = y[0];
@@ -225,16 +235,15 @@ int main(int argc, char **argv)
                 }
                 local_image[row_offset + idx1] = count1;
             }
-            // === 計算結束 ===
         }
 
         double t1 = omp_get_wtime();
-        thread_ms[tid] = (t1 - t0) * 1000.0; // 每個 thread 的總毫秒
+        thread_ms[tid] = (t1 - t0) * 1000.0; // 轉換成毫秒
     } // end parallel
 
     auto compute_end = std::chrono::steady_clock::now();
 
-    /* memory allocation for result */
+    // 為最終結果分配記憶體（只有 rank 0 需要）
     auto mem_start = std::chrono::steady_clock::now();
     int *final_image = NULL;
     if (rank == 0)
@@ -244,23 +253,17 @@ int main(int argc, char **argv)
     }
     auto mem_end = std::chrono::steady_clock::now();
 
-    // ========================================================================
-    // ** 這是新加入的區塊 **
-    // ========================================================================
-    /* Synchronization (wait for slowest process) */
-    // 這一步測量的就是 "Load Imbalance" 造成的等待時間
+    // 等待所有程序完成計算（測量負載不平衡造成的等待時間）
     auto sync_start = std::chrono::steady_clock::now();
     MPI_Barrier(MPI_COMM_WORLD);
     auto sync_end = std::chrono::steady_clock::now();
-    // ========================================================================
 
-    /* MPI communication */
-    // 現在所有進程都同步了，這裡測量的就是 "純粹的" 歸約通訊時間
+    // MPI 通訊：將所有程序的結果聚集到 rank 0
     auto comm_start = std::chrono::steady_clock::now();
     MPI_Reduce(local_image, final_image, (int)total_pixels, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
     auto comm_end = std::chrono::steady_clock::now();
 
-    /* output file */
+    // 輸出 PNG 檔案
     auto io_start = std::chrono::steady_clock::now();
     if (rank == 0)
     {
@@ -269,7 +272,7 @@ int main(int argc, char **argv)
     }
     auto io_end = std::chrono::steady_clock::now();
 
-    /* cleanup */
+    // 清理資源
     auto cleanup_start = std::chrono::steady_clock::now();
     free(local_image);
     MPI_Finalize();
@@ -277,13 +280,12 @@ int main(int argc, char **argv)
 
     auto total_end = std::chrono::steady_clock::now();
 
-    /* calculate times in milliseconds */
+    // 計算各個階段的時間（轉換成毫秒）
     auto mpi_init_time = std::chrono::duration_cast<std::chrono::milliseconds>(mpi_init_end - mpi_init_start).count();
     auto setup_time = std::chrono::duration_cast<std::chrono::milliseconds>(setup_end - setup_start).count();
     auto compute_time = std::chrono::duration_cast<std::chrono::milliseconds>(compute_end - compute_start).count();
     auto mem_time = std::chrono::duration_cast<std::chrono::milliseconds>(mem_end - mem_start).count();
 
-    // ** 新增 sync_time **
     auto sync_time = std::chrono::duration_cast<std::chrono::milliseconds>(sync_end - sync_start).count();
 
     auto comm_time = std::chrono::duration_cast<std::chrono::milliseconds>(comm_end - comm_start).count();
@@ -291,7 +293,7 @@ int main(int argc, char **argv)
     auto cleanup_time = std::chrono::duration_cast<std::chrono::milliseconds>(cleanup_end - cleanup_start).count();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count();
 
-    /* output performance report */
+    // 輸出效能報告
     if (rank == 0)
     {
         printf("=== hw2b Performance Report ===\n");
@@ -304,7 +306,7 @@ int main(int argc, char **argv)
         printf("Computation:  %lld ms\n", compute_time);
         printf("Memory:       %lld ms\n", mem_time);
         printf("ThreadTimes(ms):");
-        // 在 rank==0 的報表區塊裡補一段：
+        // 顯示每個執行緒的工作時間
 
         printf("ThreadTimes(ms):");
         for (int i = 0; i < (int)thread_ms.size(); ++i)
@@ -314,7 +316,7 @@ int main(int argc, char **argv)
         printf("\n");
     }
 
-    // ** 新增 Sync (Wait) 報告 **
+    // 顯示同步等待時間（負載不平衡指標）
     printf("Sync (Wait):  %lld ms\n", sync_time);
 
     printf("MPI Comm:     %lld ms\n", comm_time);

@@ -236,12 +236,7 @@ int main(int argc, char **argv)
     dy = (upper - lower) / height;
 
     thread_count = CPU_COUNT(&cpu_set);
-    if (const char *env_omp = getenv("OMP_NUM_THREADS"))
-    {
-        int v = atoi(env_omp);
-        if (v > 0)
-            thread_count = v;
-    }
+
     if (thread_count < 1)
         thread_count = 1;
     if (thread_count > height)

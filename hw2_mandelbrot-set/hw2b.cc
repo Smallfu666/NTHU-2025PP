@@ -78,20 +78,16 @@ int main(int argc, char **argv)
         omp_set_schedule(omp_sched_dynamic, 1);
     }
 
-    /* calculate step sizes */
     double dx = (right - left) / width;
     double dy = (upper - lower) / height;
 
-    /* allocate memory for local image */
     size_t total_pixels = (size_t)width * height;
     int *local_image = (int *)calloc(total_pixels, sizeof(int));
     assert(local_image);
 
-    /* prepare SSE2 constants */
     const double const_2_val = 2.0;
     __m128d vec_2 = _mm_load1_pd(&const_2_val);
 
-    /* mandelbrot computation with MPI + OpenMP + SSE2 */
 #pragma omp parallel for schedule(dynamic, 1)
     for (int row = rank; row < height; row += size)
     {
@@ -112,7 +108,7 @@ int main(int argc, char **argv)
 
         while (1)
         {
-            /* z = z^2 + c */
+            // 進行 Mandelbrot 計算的 SSE2 向量化步驟
             y = _mm_add_pd(_mm_mul_pd(_mm_mul_pd(vec_2, x), y), y_init);
             x = _mm_add_pd(_mm_sub_pd(x_sq, y_sq), x_init);
 
@@ -125,7 +121,6 @@ int main(int argc, char **argv)
 
             _mm_store_pd(len_arr, len_sq);
 
-            /* check channel 0 */
             if (count0 == iters || len_arr[0] >= 4.0)
             {
                 local_image[row_offset + idx0] = count0;
@@ -161,7 +156,6 @@ int main(int argc, char **argv)
                 x_sq = _mm_mul_pd(x, x);
                 y_sq = _mm_mul_pd(y, y);
             }
-            /* check channel 1 */
             else if (count1 == iters || len_arr[1] >= 4.0)
             {
                 local_image[row_offset + idx1] = count1;
@@ -212,7 +206,6 @@ int main(int argc, char **argv)
         }
     }
 
-    /* gather results to rank 0 */
     int *final_image = NULL;
     if (rank == 0)
     {
@@ -222,14 +215,12 @@ int main(int argc, char **argv)
 
     MPI_Reduce(local_image, final_image, (int)total_pixels, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    /* output PNG file */
     if (rank == 0)
     {
         write_png(filename, iters, width, height, final_image);
         free(final_image);
     }
 
-    /* cleanup */
     free(local_image);
     MPI_Finalize();
     return 0;
